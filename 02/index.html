@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Twisted Cube Torus</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.166.1/build/three.module.js"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.1, 1000);
+camera.position.set(0, -2, 22);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(devicePixelRatio);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.appendChild(renderer.domElement);
+
+// ── Psychedelic background ───────────────────────────────────────────────────
+const bgScene  = new THREE.Scene();
+const bgCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+const bgMat = new THREE.ShaderMaterial({
+  uniforms: { uTime: { value: 0 } },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
+  `,
+  fragmentShader: `
+    precision highp float;
+    varying vec2 vUv;
+    uniform float uTime;
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+    float noise(vec2 p) {
+      vec2 i=floor(p),f=fract(p);
+      float a=hash(i),b=hash(i+vec2(1,0)),c=hash(i+vec2(0,1)),d=hash(i+vec2(1,1));
+      vec2 u=f*f*(3.0-2.0*f);
+      return mix(a,b,u.x)+(c-a)*u.y*(1.0-u.x)+(d-b)*u.x*u.y;
+    }
+    float fbm(vec2 p){float v=0.0,a=0.5;mat2 r=mat2(.8,.6,-.6,.8);for(int i=0;i<5;i++){v+=a*noise(p);p=r*p*2.0;a*=0.5;}return v;}
+    void main() {
+      vec2 uv=vUv-0.5; float t=uTime*0.15;
+      float r=length(uv),a=atan(uv.y,uv.x);
+      vec2 w=vec2(fbm(vec2(a*2.0+t,r*4.0-t*0.5)),fbm(vec2(r*3.0+t*0.7,a*3.0-t)));
+      float f=fbm(uv*3.0+w*2.0+t*0.3);
+      vec3 c1=vec3(.15,0,.4),c2=vec3(.6,0,.2),c3=vec3(.1,0,.6),c4=vec3(.9,.4,0),c5=vec3(0,.15,.5);
+      float ph=f*3.0+t*0.5;
+      vec3 col=c1;
+      col=mix(col,c2,smoothstep(0.,.5,sin(ph)));
+      col=mix(col,c3,smoothstep(0.,.5,sin(ph*1.3+1.)));
+      col=mix(col,c4,smoothstep(.3,.7,sin(ph*.7+2.)));
+      col=mix(col,c5,smoothstep(.2,.6,sin(ph*1.7+3.)));
+      col*=1.0-r*0.6;
+      for(int k=0;k<8;k++){
+        float ka=float(k)*0.785+t*0.2,kr=0.32+0.05*sin(t+float(k));
+        vec2 ep=vec2(cos(ka)*kr,sin(ka)*kr);float ed=length(uv-ep);
+        col=mix(col,vec3(.9,.85,.7),smoothstep(.035,.015,ed)*0.6);
+        col=mix(col,vec3(0),smoothstep(.012,.006,ed)*0.8);
+      }
+      gl_FragColor=vec4(col,1.0);
+    }
+  `,
+  depthWrite: false,
+});
+bgScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2), bgMat));
+
+// ── Lighting ─────────────────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0x887799, 0.6));
+const keyLight = new THREE.DirectionalLight(0xffeedd, 1.4);
+keyLight.position.set(6, 10, 12);
+scene.add(keyLight);
+const fill = new THREE.DirectionalLight(0x6644aa, 0.5);
+fill.position.set(-8, -5, -6);
+scene.add(fill);
+const rimLight = new THREE.PointLight(0xff2200, 3, 15);
+rimLight.position.set(0, 0, -3);
+scene.add(rimLight);
+
+// ── Cracked-skin shader material ─────────────────────────────────────────────
+const skinMat = new THREE.MeshStandardMaterial({ color: 0xbb1a08, roughness: 0.5, metalness: 0.1 });
+skinMat.onBeforeCompile = (shader) => {
+  shader.uniforms.uTime = { value: 0 };
+  skinMat.userData.shader = shader;
+  // Inject varyings
+  shader.vertexShader = shader.vertexShader.replace(
+    '#include <common>',
+    `#include <common>
+     varying vec3 vWorldPos;
+     varying vec3 vObjPos;`
+  );
+  shader.vertexShader = shader.vertexShader.replace(
+    '#include <begin_vertex>',
+    `#include <begin_vertex>
+     vObjPos = position;
+     vWorldPos = (modelMatrix * vec4(position,1.0)).xyz;`
+  );
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <common>',
+    `#include <common>
+     varying vec3 vWorldPos;
+     varying vec3 vObjPos;
+     uniform float uTime;
+
+     float hash3(vec3 p){ return fract(sin(dot(p,vec3(127.1,311.7,74.7)))*43758.5453); }
+     float vnoise(vec3 p){
+       vec3 i=floor(p),f=fract(p); f=f*f*(3.0-2.0*f);
+       return mix(mix(mix(hash3(i),hash3(i+vec3(1,0,0)),f.x),
+                      mix(hash3(i+vec3(0,1,0)),hash3(i+vec3(1,1,0)),f.x),f.y),
+                  mix(mix(hash3(i+vec3(0,0,1)),hash3(i+vec3(1,0,1)),f.x),
+                      mix(hash3(i+vec3(0,1,1)),hash3(i+vec3(1,1,1)),f.x),f.y),f.z);
+     }
+     // Voronoi cracks
+     float voronoi(vec3 p){
+       vec3 i=floor(p),f=fract(p); float d=1.0;
+       for(int x=-1;x<=1;x++) for(int y=-1;y<=1;y++) for(int z=-1;z<=1;z++){
+         vec3 n=vec3(x,y,z);
+         vec3 r=n+vec3(hash3(i+n),hash3(i+n+34.0),hash3(i+n+71.0))*0.85-f;
+         d=min(d,dot(r,r));
+       }
+       return sqrt(d);
+     }`
+  );
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <color_fragment>',
+    `#include <color_fragment>
+     // Crack lines
+     float v = voronoi(vObjPos * 5.5);
+     float crack = smoothstep(0.02, 0.08, v);
+     // Vein glow in cracks
+     vec3 glowCol = vec3(1.0, 0.25, 0.0);
+     float veinGlow = (1.0 - crack) * 0.7;
+     // Subtle surface variation
+     float n = vnoise(vObjPos * 8.0) * 0.15;
+     diffuseColor.rgb = mix(glowCol, diffuseColor.rgb * (0.85 + n), crack);`
+  );
+};
+
+const darkMat = new THREE.MeshStandardMaterial({
+  color: 0x881008, roughness: 0.6, metalness: 0.1,
+  emissive: 0x220000, emissiveIntensity: 0.3,
+});
+
+// ── Detailed humanoid figure ─────────────────────────────────────────────────
+const fig = new THREE.Group();
+
+function addPart(geo, mat, pos, rot, scl) {
+  const m = new THREE.Mesh(geo, mat || skinMat);
+  if (pos) m.position.set(...pos);
+  if (rot) m.rotation.set(...rot);
+  if (scl) m.scale.set(...scl);
+  fig.add(m);
+  return m;
+}
+
+// ─── HEAD ────────────────────────────────────────────────────────────────────
+// Skull
+addPart(new THREE.SphereGeometry(0.52, 24, 18), null, [0, 3.05, 0], null, [1, 1.18, 0.92]);
+// Brow ridge
+addPart(new THREE.SphereGeometry(0.2, 12, 8), null, [-0.22, 3.22, 0.38], null, [1.2, 0.5, 0.8]);
+addPart(new THREE.SphereGeometry(0.2, 12, 8), null, [ 0.22, 3.22, 0.38], null, [1.2, 0.5, 0.8]);
+// Eye sockets (dark insets)
+addPart(new THREE.SphereGeometry(0.1, 10, 8), darkMat, [-0.18, 3.12, 0.42]);
+addPart(new THREE.SphereGeometry(0.1, 10, 8), darkMat, [ 0.18, 3.12, 0.42]);
+// Nose bridge
+addPart(new THREE.BoxGeometry(0.08, 0.22, 0.15), null, [0, 3.02, 0.48], [0.2,0,0]);
+// Cheekbones
+addPart(new THREE.SphereGeometry(0.16, 10, 8), null, [-0.32, 2.98, 0.3], null, [0.7, 0.6, 0.6]);
+addPart(new THREE.SphereGeometry(0.16, 10, 8), null, [ 0.32, 2.98, 0.3], null, [0.7, 0.6, 0.6]);
+// Jaw / chin
+addPart(new THREE.SphereGeometry(0.3, 12, 10), null, [0, 2.72, 0.12], null, [0.85, 0.55, 0.75]);
+// Mouth slit
+addPart(new THREE.BoxGeometry(0.2, 0.03, 0.06), darkMat, [0, 2.82, 0.42]);
+
+// ─── NECK ────────────────────────────────────────────────────────────────────
+addPart(new THREE.CylinderGeometry(0.18, 0.22, 0.5, 12), null, [0, 2.42, 0]);
+// Sternocleidomastoid (neck muscles)
+addPart(new THREE.CylinderGeometry(0.06, 0.08, 0.55, 8), null, [-0.14, 2.4, 0.08], [0, 0, 0.12], [1, 1, 0.7]);
+addPart(new THREE.CylinderGeometry(0.06, 0.08, 0.55, 8), null, [ 0.14, 2.4, 0.08], [0, 0, -0.12], [1, 1, 0.7]);
+
+// ─── TORSO ───────────────────────────────────────────────────────────────────
+// Ribcage / upper torso (using a lathe shape for organic form)
+const torsoProfile = [];
+const tSteps = 16;
+for (let i = 0; i <= tSteps; i++) {
+  const t = i / tSteps;
+  const y = t * 2.0;
+  // Width: narrow at top (neck), wide at chest, narrower at waist
+  let w = 0.25 + 0.38 * Math.sin(t * Math.PI * 0.8) * (1 - t * 0.3);
+  torsoProfile.push(new THREE.Vector2(w, y));
+}
+addPart(new THREE.LatheGeometry(torsoProfile, 16), null, [0, 0.15, 0], null, [1.15, 1, 0.75]);
+
+// Pectorals
+addPart(new THREE.SphereGeometry(0.28, 12, 10), null, [-0.22, 1.85, 0.2], null, [1.1, 0.7, 0.6]);
+addPart(new THREE.SphereGeometry(0.28, 12, 10), null, [ 0.22, 1.85, 0.2], null, [1.1, 0.7, 0.6]);
+// Sternum line
+addPart(new THREE.BoxGeometry(0.03, 1.0, 0.04), null, [0, 1.6, 0.28]);
+// Abs suggestion (subtle bumps)
+for (let row = 0; row < 3; row++) {
+  for (let side = -1; side <= 1; side += 2) {
+    addPart(
+      new THREE.SphereGeometry(0.09, 8, 6), null,
+      [side * 0.1, 1.2 - row * 0.2, 0.22], null, [1.3, 0.8, 0.5]
+    );
+  }
+}
+
+// ─── SHOULDERS / TRAPS ──────────────────────────────────────────────────────
+// Trapezius
+addPart(new THREE.SphereGeometry(0.25, 10, 8), null, [-0.3, 2.25, -0.05], null, [1.2, 0.8, 0.7]);
+addPart(new THREE.SphereGeometry(0.25, 10, 8), null, [ 0.3, 2.25, -0.05], null, [1.2, 0.8, 0.7]);
+// Deltoids
+addPart(new THREE.SphereGeometry(0.22, 12, 10), null, [-0.62, 2.1, 0], null, [0.9, 1.1, 0.85]);
+addPart(new THREE.SphereGeometry(0.22, 12, 10), null, [ 0.62, 2.1, 0], null, [0.9, 1.1, 0.85]);
+
+// ─── ARMS ────────────────────────────────────────────────────────────────────
+function buildArm(s) {
+  // Upper arm — bicep + tricep
+  const upperGroup = new THREE.Group();
+  // Main cylinder
+  const upper = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.12, 1.3, 10), skinMat);
+  upperGroup.add(upper);
+  // Bicep bulge
+  const bicep = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6), skinMat);
+  bicep.position.set(0, 0.1, 0.06);
+  bicep.scale.set(1, 1.3, 0.8);
+  upperGroup.add(bicep);
+
+  upperGroup.position.set(s * 0.72, 1.38, 0);
+  upperGroup.rotation.z = s * 0.2;
+  fig.add(upperGroup);
+
+  // Elbow joint
+  addPart(new THREE.SphereGeometry(0.12, 8, 8), null, [s * 0.82, 0.7, 0]);
+
+  // Forearm
+  const forearmGroup = new THREE.Group();
+  const forearm = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.09, 1.15, 10), skinMat);
+  forearmGroup.add(forearm);
+  // Forearm muscle
+  const fMuscle = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), skinMat);
+  fMuscle.position.set(0, 0.2, 0.04);
+  fMuscle.scale.set(1, 1.5, 0.7);
+  forearmGroup.add(fMuscle);
+
+  forearmGroup.position.set(s * 1.3, 0.45, 0.25);
+  forearmGroup.rotation.z = s * 0.85;
+  forearmGroup.rotation.x = -0.25;
+  fig.add(forearmGroup);
+
+  // Wrist
+  addPart(new THREE.SphereGeometry(0.08, 8, 6), null,
+    [s * 1.72, 0.12, 0.4]);
+
+  // ─── HAND WITH FINGERS ─────────────────────────────────────────────────────
+  const handGroup = new THREE.Group();
+
+  // Palm
+  const palm = new THREE.Mesh(
+    new THREE.BoxGeometry(0.28, 0.07, 0.22),
+    skinMat
+  );
+  handGroup.add(palm);
+
+  // 5 fingers, spread slightly
+  const fingerAngles = [-0.35, -0.15, 0, 0.15, 0.35];
+  const fingerLens   = [0.14,  0.18, 0.2, 0.17, 0.12];
+  const fingerRads   = [0.025, 0.028, 0.03, 0.028, 0.022];
+
+  for (let f = 0; f < 5; f++) {
+    const fGroup = new THREE.Group();
+
+    // Base segment
+    const seg1 = new THREE.Mesh(
+      new THREE.CylinderGeometry(fingerRads[f], fingerRads[f] * 0.9, fingerLens[f], 6),
+      skinMat
+    );
+    seg1.position.y = fingerLens[f] / 2;
+    fGroup.add(seg1);
+
+    // Tip segment
+    const seg2 = new THREE.Mesh(
+      new THREE.CylinderGeometry(fingerRads[f] * 0.85, fingerRads[f] * 0.6, fingerLens[f] * 0.7, 6),
+      skinMat
+    );
+    seg2.position.y = fingerLens[f] + fingerLens[f] * 0.3;
+    fGroup.add(seg2);
+
+    // Knuckle joint
+    const knuckle = new THREE.Mesh(new THREE.SphereGeometry(fingerRads[f] * 1.1, 6, 4), skinMat);
+    knuckle.position.y = fingerLens[f];
+    fGroup.add(knuckle);
+
+    fGroup.position.set((f - 2) * 0.055, 0.035, 0.11);
+    fGroup.rotation.x = -0.15 + Math.abs(f - 2) * 0.05; // slight curl
+    fGroup.rotation.z = fingerAngles[f] * 0.4;  // spread
+    handGroup.add(fGroup);
+  }
+
+  // Thumb
+  const thumb = new THREE.Group();
+  const t1 = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.025, 0.12, 6), skinMat);
+  t1.position.y = 0.06;
+  thumb.add(t1);
+  const t2 = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.018, 0.08, 6), skinMat);
+  t2.position.y = 0.14;
+  thumb.add(t2);
+  thumb.position.set(s > 0 ? 0.14 : -0.14, 0, 0.04);
+  thumb.rotation.z = s * -0.6;
+  thumb.rotation.x = -0.3;
+  handGroup.add(thumb);
+
+  handGroup.position.set(s * 1.82, 0.05, 0.48);
+  handGroup.rotation.z = s * 0.55;
+  handGroup.rotation.x = -0.1;
+  fig.add(handGroup);
+}
+
+buildArm(-1);
+buildArm(1);
+
+// ─── THIRD EYE / ENERGY POINTS ──────────────────────────────────────────────
+const glowMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+const thirdEye = new THREE.Mesh(new THREE.SphereGeometry(0.08, 10, 8), glowMat);
+thirdEye.position.set(0, 3.3, 0.5);
+fig.add(thirdEye);
+
+// Wider glow ring behind third eye
+const ringGeo = new THREE.TorusGeometry(0.15, 0.02, 8, 20);
+const ringMat = new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 0.6 });
+const eyeRing = new THREE.Mesh(ringGeo, ringMat);
+eyeRing.position.set(0, 3.3, 0.48);
+fig.add(eyeRing);
+
+// Chest energy
+const chestOrb = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8),
+  new THREE.MeshBasicMaterial({ color: 0x44ff44, transparent: true, opacity: 0.5 }));
+chestOrb.position.set(0, 1.6, 0.35);
+fig.add(chestOrb);
+
+const chestGlow = new THREE.PointLight(0xffaa00, 2, 5);
+chestGlow.position.set(0, 1.5, 0.5);
+fig.add(chestGlow);
+
+// Position figure
+fig.position.set(0, -1.2, -2);
+fig.scale.setScalar(0.95);
+scene.add(fig);
+
+// ── Torus with square cross-section and twist ────────────────────────────────
+const N_RING = 20, R2 = 4.8, dd = 1.35, TWIST = Math.PI * 2;
+const SQ = [[dd,dd],[-dd,dd],[-dd,-dd],[dd,-dd]];
+function getCorners(i) {
+  const u=(i/N_RING)*Math.PI*2, tw=(i/N_RING)*TWIST;
+  const cx=R2*Math.cos(u),cy=R2*Math.sin(u);
+  const ct=Math.cos(tw),st=Math.sin(tw),cu=Math.cos(u),su=Math.sin(u);
+  return SQ.map(([a,b])=>new THREE.Vector3(
+    cx+a*(cu*ct)+b*(-cu*st), cy+a*(su*ct)+b*(-su*st), a*st+b*ct));
+}
+const pos=[],nrm=[],idx=[];
+const aC=[];for(let i=0;i<=N_RING;i++)aC.push(getCorners(i));
+let vi2=0;
+for(let i=0;i<N_RING;i++){
+  const c0=aC[i],c1=aC[i+1];
+  for(let j=0;j<4;j++){
+    const j2=(j+1)%4;
+    const a=c0[j],b=c0[j2],c=c1[j2],e=c1[j];
+    const e1=new THREE.Vector3().subVectors(c,a),e2=new THREE.Vector3().subVectors(b,a);
+    const n=new THREE.Vector3().crossVectors(e1,e2).normalize();
+    for(const v of[a,b,c,e]){pos.push(v.x,v.y,v.z);nrm.push(n.x,n.y,n.z);}
+    idx.push(vi2,vi2+1,vi2+2,vi2,vi2+2,vi2+3);vi2+=4;
+  }
+}
+const tG=new THREE.BufferGeometry();
+tG.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+tG.setAttribute('normal',new THREE.Float32BufferAttribute(nrm,3));
+tG.setIndex(idx);
+const tM=new THREE.Mesh(tG,new THREE.MeshStandardMaterial({
+  color:0xccc8be,roughness:0.75,metalness:0.05,flatShading:true,side:THREE.DoubleSide}));
+const eM=new THREE.LineSegments(new THREE.EdgesGeometry(tG,1),
+  new THREE.LineBasicMaterial({color:0x111111}));
+const tGr=new THREE.Group();tGr.add(tM);tGr.add(eM);
+tGr.rotation.x=0.55;tGr.rotation.z=0.2;
+scene.add(tGr);
+
+// ── Animate ──────────────────────────────────────────────────────────────────
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  bgMat.uniforms.uTime.value = t;
+  if (skinMat.userData.shader) skinMat.userData.shader.uniforms.uTime.value = t;
+
+  tGr.rotation.z = 0.2 + t * 0.15;
+
+  // Breathing
+  const b = 1.0 + Math.sin(t * 1.5) * 0.012;
+  fig.scale.set(0.95, 0.95 * b, 0.95);
+
+  // Glow pulses
+  const p = 0.5 + Math.sin(t * 2.0) * 0.5;
+  thirdEye.material.color.setHSL(0.08 + p * 0.05, 1, 0.55 + p * 0.15);
+  eyeRing.material.opacity = 0.3 + p * 0.4;
+  eyeRing.rotation.z = t * 0.5;
+  chestGlow.intensity = 1.5 + p * 1.5;
+  chestOrb.material.opacity = 0.3 + p * 0.3;
+  chestOrb.scale.setScalar(1.0 + p * 0.15);
+
+  renderer.autoClear = false;
+  renderer.clear();
+  renderer.render(bgScene, bgCamera);
+  renderer.render(scene, camera);
+  renderer.autoClear = true;
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
